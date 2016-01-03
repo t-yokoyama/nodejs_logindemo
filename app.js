@@ -32,10 +32,6 @@ app.use(express.static(path.join(__dirname, 'public')));
 
 console.log('begin login configuration');
 
-var dbConfig = require('./config/db.js');
-var mongoose = require('mongoose');
-mongoose.connect(dbConfig.url);
-
 var passport = require('passport');
 var expressSession = require('express-session');
 var flash = require('connect-flash');
@@ -45,19 +41,17 @@ app.use(passport.session());
 app.use(flash());
 
 passport.serializeUser(function(user, done) {
-  done(null, user._id);
+  done(null, user);
 });
 
-passport.deserializeUser(function(id, done) {
-  User.findById(id, function(err, user) {
-    done(err, user);
-  });
+passport.deserializeUser(function(user, done) {
+  done(null, user);
 });
 
 var bcrypt = require('bcrypt-nodejs');
 
-var isValidPassword = function(user, password) {
-  return bcrypt.compareSync(password, user.password);
+var isValidPassword = function(passwordHash, password) {
+  return bcrypt.compareSync(password, passwordHash);
 }
 
 var createHash = function(password) {
@@ -65,7 +59,7 @@ var createHash = function(password) {
 }
 
 var LocalStrategy = require('passport-local').Strategy;
-var User = require('./models/user.js');
+var db = require('./config/db.js');
 
 passport.use('login', new LocalStrategy({
     usernameField: 'username',
@@ -73,40 +67,38 @@ passport.use('login', new LocalStrategy({
     passReqToCallback : true
   },
   function(req, username, password, done) {
-
     console.log('searching database for user (login)');
-    User.findOne(
-      { 'username' : username },
-      function(err, user) {
 
-        console.log('entered database callback (login)');
-
-        // case 1) error
+    db.query(
+      'SELECT * FROM users u WHERE u.username = $1::text',
+      [username],
+      function(err, result) {
         if (err) {
-          console.log('login error: ' + err);
-          return done(err);
+          return console.error('error running query', err);
         }
 
-        // case 2) username does not exist
-        if (!user) {
+        if (result.rows.length < 1) {
           console.log('user not found with username ' + username);
           return done(null, false,
                       req.flash('loginMessage', 'User not found'));
         }
 
-        // case 3) user exists, but wrong password
-        if (!isValidPassword(user, password)) {
+        if (!isValidPassword(result.rows[0].password, password)) {
           console.log('invalid password');
           return done(null, false,
                       req.flash('loginMessage', 'Invalid password'));
         }
 
-        // case 4) user and password match
         console.log('login success');
+        var user = { id: result.rows[0].id,
+                     username: username,
+                     password: result.rows[0].password,
+                     email: result.rows[0].email }
         return done(null, user);
       }
     );
-}));
+  }
+));
 
 passport.use('signup', new LocalStrategy({
     usernameField: 'username',
@@ -116,49 +108,46 @@ passport.use('signup', new LocalStrategy({
   function(req, username, password, done) {
 
     findOrCreateUser = function() {
-
       console.log('searching database for user (signup)');
-      User.findOne(
-        { 'username' : username },
-        function(err, user) {
 
-          console.log('entered database callback (signup)');
-
-          // case 1) error
+      db.query(
+        'SELECT u.password FROM users u WHERE u.username = $1::text',
+        [username],
+        function(err, result) {
           if (err) {
-            console.log('signup error: ' + err);
-            return done(err);
+            return console.error('error running query', err);
           }
 
-          // case 2) username already exists
-          if (user) {
+          if (result.rows.length > 0) {
             console.log('user already exists: ' + username);
             return done(null, false,
                         req.flash('signupMessage', 'User already exists'));
-          } else {
+          }
 
-            var newUser = new User();
-            newUser.username = username;
-            newUser.password = createHash(password);
-            newUser.email = req.param('email');
-
-            console.log('attempting to save user to database');
-            newUser.save(function(err){
+          var passwordHash = createHash(password);
+          var email = req.body.email;
+          db.query(
+            'INSERT INTO users (username, password, email) VALUES ($1::text, $2::text, $3::text) RETURNING id',
+            [username, passwordHash, email],
+            function(err, result) {
               if (err) {
-                console.log('error saving new user: ' + err);
-                throw err;
-                // FIXME why do we throw here but not above in login?
+                return console.error('error running query', err);
               }
 
               console.log('user registration successful');
-              return done(null, newUser);
-            });
-          }
+              var user = { id: result.rows[0].id,
+                           username: username,
+                           password: passwordHash,
+                           email: email }
+              return done(null, user);
+            }
+          );
+
         }
       );
+
     };
 
-    // FIXME why is this necessary?
     // delay execution of findOrCreateUser()
     process.nextTick(findOrCreateUser);
 }));
