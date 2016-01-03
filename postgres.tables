@@ -1,0 +1,17 @@
+-- Table: users
+
+-- DROP TABLE users;
+
+CREATE TABLE users
+(
+  username text,
+  password text,
+  email text,
+  id serial NOT NULL,
+  CONSTRAINT id_pkey PRIMARY KEY (id)
+)
+WITH (
+  OIDS=FALSE
+);
+ALTER TABLE users
+  OWNER TO postgres;
